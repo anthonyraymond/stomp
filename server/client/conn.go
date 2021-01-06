@@ -139,7 +139,7 @@ func (c *Conn) readLoop() {
 
 		reader, err := c.stompConn.Receive()
 		if err != nil {
-			log.Println("The connection seems to be closed or read has timed out")
+			log.Println("The connection seems to be closed or read has timed out", err)
 			c.sendErrorImmediately(err, nil)
 			return
 		}

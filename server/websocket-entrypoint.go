@@ -7,6 +7,7 @@ import (
 	"github.com/gorilla/websocket"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -36,7 +37,11 @@ func NewWebSocketEntryPoint(port int) StompEntryPoint {
 func (w *webSocketEntryPoint) Listen() error {
 	handler := http.NewServeMux()
 	handler.HandleFunc("/ws", func(writer http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(writer, r, nil)
+		respHeader := http.Header{}
+		if h := r.Header.Get("Sec-WebSocket-Protocol"); h != "" {
+			respHeader.Add("Sec-WebSocket-Protocol", strings.Split(h, ",")[0])
+		}
+		conn, err := upgrader.Upgrade(writer, r, respHeader)
 		if err != nil {
 			log.Println("Upgrade error:", err)
 			return
