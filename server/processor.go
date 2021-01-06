@@ -36,8 +36,8 @@ func newRequestProcessor(server *Server) *requestProcessor {
 	return proc
 }
 
-func (proc *requestProcessor) Serve(l net.Listener) error {
-	go proc.Listen(l)
+func (proc *requestProcessor) Serve(entrypoint StompEntryPoint) error {
+	go proc.Listen(entrypoint)
 
 	for {
 		r := <-proc.ch
@@ -99,11 +99,11 @@ func isQueueDestination(dest string) bool {
 	return strings.HasPrefix(dest, QueuePrefix)
 }
 
-func (proc *requestProcessor) Listen(l net.Listener) {
+func (proc *requestProcessor) Listen(entrypoint StompEntryPoint) {
 	config := newConfig(proc.server)
 	timeout := time.Duration(0) // how long to sleep on accept failure
 	for {
-		rw, err := l.Accept()
+		stompConnection, err := entrypoint.Accept()
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
 				if timeout == 0 {
@@ -121,12 +121,16 @@ func (proc *requestProcessor) Listen(l net.Listener) {
 			return
 		}
 		timeout = 0
-		// TODO: need to pass Server to connection so it has access to
-		// configuration parameters.
-		_ = client.NewConn(config, rw, proc.ch)
+		_ = client.NewConn(config, stompConnection, proc.ch)
 	}
 	// This is no longer required for go 1.1
 	panic("not reached")
+}
+
+type StompEntryPoint interface {
+	Listen() error
+	Shutdown()
+	Accept() (client.StompConnection, error)
 }
 
 type config struct {

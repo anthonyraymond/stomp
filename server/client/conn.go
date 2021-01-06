@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log"
@@ -22,11 +23,19 @@ const maxPendingWrites = 16
 // go routine starts blocking.
 const maxPendingReads = 16
 
+type StompConnection interface {
+	Send(data []byte) error
+	Receive() (io.Reader, error)
+	SetReadDeadline(deadline time.Time) error
+	LocalAddr() net.Addr
+	RemoteAddr() net.Addr
+	Close() error
+}
+
 // Represents a connection with the STOMP client.
 type Conn struct {
 	config         Config
-	rw             net.Conn                            // Network connection to client
-	writer         *frame.Writer                       // Writes STOMP frames directly to the network connection
+	stompConn      StompConnection                     // Network connection to client
 	requestChannel chan Request                        // For sending requests to upper layer
 	subChannel     chan *Subscription                  // Receives subscription messages for client
 	writeChannel   chan *frame.Frame                   // Receives unacknowledged (topic) messages for client
@@ -44,13 +53,13 @@ type Conn struct {
 
 // Creates a new client connection. The config parameter contains
 // process-wide configuration parameters relevant to a client connection.
-// The rw parameter is a network connection object for communicating with
+// The stompConn parameter is a network connection object for communicating with
 // the client. All client requests are sent via the ch channel to the
 // upper layer.
-func NewConn(config Config, rw net.Conn, ch chan Request) *Conn {
+func NewConn(config Config, rw StompConnection, ch chan Request) *Conn {
 	c := &Conn{
 		config:         config,
-		rw:             rw,
+		stompConn:      rw,
 		requestChannel: ch,
 		subChannel:     make(chan *Subscription, maxPendingWrites),
 		writeChannel:   make(chan *frame.Frame, maxPendingWrites),
@@ -105,7 +114,11 @@ func (c *Conn) sendErrorImmediately(err error, f *frame.Frame) {
 // Sends a STOMP frame to the client immediately, does not push onto the
 // write channel to be processed in turn.
 func (c *Conn) sendImmediately(f *frame.Frame) error {
-	return c.writer.Write(f)
+	data, err := frameToByteArray(f)
+	if err != nil {
+		return err
+	}
+	return c.stompConn.Send(data)
 }
 
 // Go routine for reading bytes from a client and assembling into
@@ -114,22 +127,29 @@ func (c *Conn) sendImmediately(f *frame.Frame) error {
 // processLoop go-routine. This keeps all processing of frames for
 // this connection on the one go-routine and avoids race conditions.
 func (c *Conn) readLoop() {
-	reader := frame.NewReader(c.rw)
 	expectingConnect := true
 	readTimeout := time.Duration(0)
 	for {
 		if readTimeout == time.Duration(0) {
 			// infinite timeout
-			c.rw.SetReadDeadline(time.Time{})
+			c.stompConn.SetReadDeadline(time.Time{})
 		} else {
-			c.rw.SetReadDeadline(time.Now().Add(readTimeout))
+			c.stompConn.SetReadDeadline(time.Now().Add(readTimeout))
 		}
-		f, err := reader.Read()
+
+		reader, err := c.stompConn.Receive()
+		if err != nil {
+			log.Println("The connection seems to be closed or read has timed out")
+			c.sendErrorImmediately(err, nil)
+			return
+		}
+
+		f, err := frame.NewReader(reader).Read()
 		if err != nil {
 			if err == io.EOF {
-				log.Println("connection closed:", c.rw.RemoteAddr())
+				log.Println("connection closed:", c.stompConn.RemoteAddr())
 			} else {
-				log.Println("read failed:", err, ":", c.rw.RemoteAddr())
+				log.Println("read failed:", err, ":", c.stompConn.RemoteAddr())
 			}
 
 			// Close the read channel so that the processing loop will
@@ -186,7 +206,6 @@ func (c *Conn) readLoop() {
 func (c *Conn) processLoop() {
 	defer c.cleanupConn()
 
-	c.writer = frame.NewWriter(c.rw)
 	c.stateFunc = connecting
 	for {
 		var timerChannel <-chan time.Time
@@ -217,7 +236,11 @@ func (c *Conn) processLoop() {
 			c.allocateMessageId(f, nil)
 
 			// write the frame to the client
-			err := c.writer.Write(f)
+			data, err := frameToByteArray(f)
+			if err != nil {
+				return
+			}
+			err = c.stompConn.Send(data)
 			if err != nil {
 				// if there is an error writing to
 				// the client, there is not much
@@ -285,7 +308,11 @@ func (c *Conn) processLoop() {
 				c.allocateMessageId(sub.frame, sub)
 
 				// write the frame to the client
-				err := c.writer.Write(sub.frame)
+				data, err := frameToByteArray(sub.frame)
+				if err != nil {
+					return
+				}
+				err = c.stompConn.Send(data)
 				if err != nil {
 					// if there is an error writing to
 					// the client, there is not much
@@ -311,7 +338,11 @@ func (c *Conn) processLoop() {
 
 		case _ = <-timerChannel:
 			// write a heart-beat
-			err := c.writer.Write(nil)
+			data, err := frameToByteArray(nil)
+			if err != nil {
+				return
+			}
+			err = c.stompConn.Send(data)
 			if err != nil {
 				return
 			}
@@ -360,7 +391,7 @@ func (c *Conn) cleanupConn() {
 	c.cleanupSubChannel()
 
 	// Should not hurt to call this if it is already closed?
-	c.rw.Close()
+	_ = c.stompConn.Close()
 }
 
 // Discard anything on the write channel. These frames
@@ -761,4 +792,10 @@ func (c *Conn) handleSend(f *frame.Frame) error {
 	}
 
 	return nil
+}
+
+func frameToByteArray(f *frame.Frame) ([]byte, error) {
+	ba := bytes.NewBuffer([]byte{})
+	err := frame.NewWriter(ba).Write(f)
+	return ba.Bytes(), err
 }

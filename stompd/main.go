@@ -15,7 +15,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"os"
 
 	"github.com/go-stomp/stomp/server"
@@ -52,12 +51,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	l, err := net.Listen("tcp", *listenAddr)
-	if err != nil {
-		log.Fatalf("failed to listen: %s", err.Error())
-	}
-	defer func() { l.Close() }()
+	entryPoint := server.NewTcpEntryPoint(*listenAddr)
 
-	log.Println("listening on", l.Addr().Network(), l.Addr().String())
-	server.Serve(l)
+	log.Println("Starting on ", *listenAddr)
+	_ = server.ListenAndServe(entryPoint)
+	entryPoint.Shutdown()
 }

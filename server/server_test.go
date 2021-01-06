@@ -28,10 +28,9 @@ func (s *ServerSuite) TearDownSuite(c *C) {
 
 func (s *ServerSuite) TestConnectAndDisconnect(c *C) {
 	addr := ":59091"
-	l, err := net.Listen("tcp", addr)
-	c.Assert(err, IsNil)
-	defer func() { l.Close() }()
-	go Serve(l)
+	entryPoint := NewTcpEntryPoint(addr)
+	go ListenAndServe(entryPoint)
+	defer func() { entryPoint.Shutdown() }()
 
 	conn, err := net.Dial("tcp", "127.0.0.1"+addr)
 	c.Assert(err, IsNil)
@@ -51,10 +50,9 @@ func (s *ServerSuite) TestSendToQueuesAndTopics(c *C) {
 
 	addr := ":59092"
 
-	l, err := net.Listen("tcp", addr)
-	c.Assert(err, IsNil)
-	defer func() { l.Close() }()
-	go Serve(l)
+	entryPoint := NewTcpEntryPoint(addr)
+	go ListenAndServe(entryPoint)
+	defer func() { entryPoint.Shutdown() }()
 
 	// channel to communicate that the go routine has started
 	started := make(chan bool)
